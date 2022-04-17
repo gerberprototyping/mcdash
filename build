@@ -1,0 +1,96 @@
+#!/usr/bin/python3
+import docker
+import subprocess
+import os
+import time
+import argparse
+
+
+LOG_DIR = "logs"
+LOG_FILE = "output.log"
+BUILDS = {
+    "dev": {"compose_file": "docker-compose.yml"},
+    "prod": {"compose_file": "docker-compose.prod.yml"}
+}
+
+
+parser = argparse.ArgumentParser(
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="Build script for MC Dashboard Docker",
+        epilog=
+"""\
+Available builds:
+    %s
+""" % [BUILDS.keys()]
+)
+
+parser.add_argument(
+        "build_name",
+        metavar="build_name",
+        choices=BUILDS.keys()
+)
+
+
+
+
+def main():
+    args = parser.parse_args()
+    # Stop any running containers
+    for build_name in BUILDS.keys():
+        _docker_compose_down(BUILDS[build_name]["compose_file"])
+    client, log_path = _set_up_environment()
+    # Build and start from compose file
+    compose_file = BUILDS[args.build_name]["compose_file"]
+    _docker_compose_up(compose_file, log_path)
+    # Django migrate and collectstatic
+    _docker_compose_exec(compose_file, "web python manage.py migrate --noinput")
+    _docker_compose_exec(compose_file, "web python manage.py collectstatic --noinput --clear")
+
+
+def _docker_compose_up(compose_file, log_path):
+    bash_command = "docker-compose -f %s up -d --build"%compose_file
+    _execute_shell_command(bash_command, log_path)
+
+
+def _docker_compose_down(compose_file):
+    bash_command = "docker-compose -f %s down"%compose_file
+    _execute_shell_command(bash_command)
+
+def _docker_compose_exec(compose_file, cmd):
+    bash_command = "docker-compose -f %s exec %s"%(compose_file,cmd)
+    _execute_shell_command(bash_command)
+
+
+def _execute_shell_command(bash_command, log_path="/dev/null"):
+    with open(log_path, "w") as output:
+        subprocess.run(
+            bash_command,
+            shell=True,
+            stdout=output,
+            stderr=output
+        )
+    while not output.closed:
+        time.sleep(0.1)
+    print("%s COMMAND %s LOG OUTPUT:"%(os.linesep,bash_command))
+    with open(log_path, "r") as output:
+        for line in output:
+            print(line)
+
+
+def _create_docker_log_file():
+    log_path = os.path.join(os.getcwd(), LOG_DIR, LOG_FILE)
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    assert os.path.isdir(os.path.dirname(log_path))
+    if not os.path.isfile(log_path):
+        os.mknod(log_path)
+    return log_path
+
+
+def _set_up_environment():
+    log_path = _create_docker_log_file()
+    client = docker.from_env()
+    return client, log_path
+
+
+if __name__ == "__main__":
+    main()
